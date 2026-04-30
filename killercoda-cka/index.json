@@ -1,0 +1,27 @@
+{
+  "title": "CKA Exam Practice Environment",
+  "description": "Kubernetes CKA exam practice with all prerequisites pre-configured. Practice your exam tasks clearly.",
+  "details": {
+    "intro": {
+      "text": "intro.md",
+      "foreground": "foreground.sh",
+      "background": "background.sh"
+    },
+    "steps": [
+      {
+        "title": "Practice Your Tasks",
+        "text": "steps/practice.md"
+      },
+      {
+        "title": "Reset and Practice Again",
+        "text": "steps/reset.md"
+      }
+    ],
+    "finish": {
+      "text": "finish.md"
+    }
+  },
+  "backend": {
+    "imageid": "kubernetes-kubeadm-2nodes"
+  }
+}
