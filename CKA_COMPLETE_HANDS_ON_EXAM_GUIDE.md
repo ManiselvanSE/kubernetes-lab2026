@@ -3264,7 +3264,2012 @@ kubectl get pv
 
 ---
 
-*[Continue with Parts 5-10: Networking, Security, Cluster Maintenance, Troubleshooting, Advanced Topics, and 22 Practice Questions...]*
+# Part 5: Networking
+
+## Kubernetes Networking Basics
+
+### The Three Network Types in Kubernetes
+
+**1. Pod Network**
+- Every pod gets its own IP address
+- Pods can communicate with each other directly
+- No NAT (Network Address Translation) needed
+
+**2. Service Network**
+- Services get ClusterIP addresses
+- Stable endpoint for accessing pods
+- Load balancing built-in
+
+**3. Node Network**
+- Nodes have their own IPs
+- NodePort services expose on node IPs
+- External traffic enters through nodes
+
+### Network Requirements
+
+Kubernetes networking must satisfy these rules:
+1. Pods can communicate with all other pods without NAT
+2. Nodes can communicate with all pods without NAT
+3. The IP a pod sees itself as is the same IP others see it as
+
+### Hands-On: Understanding Pod Networking
+
+```bash
+# Create two pods
+kubectl run pod1 --image=nginx
+kubectl run pod2 --image=nginx
+
+# Get pod IPs
+kubectl get pods -o wide
+
+# Pod1 can ping Pod2 directly
+kubectl exec pod1 -- ping -c 2 <pod2-ip>
+
+# Check pod's view of its own IP
+kubectl exec pod1 -- hostname -i
+```
+
+---
+
+## Network Policies - Controlling Traffic
+
+### What are Network Policies?
+
+**Simple Explanation:**
+Network Policies are firewall rules for your pods. They control which pods can talk to each other.
+
+**Real-World Analogy:**
+Think of Network Policies like security guards at building entrances. They check who's allowed in (ingress) and who can leave (egress) based on specific rules.
+
+### Default Behavior
+
+**Without Network Policies:**
+- All pods can talk to all other pods
+- All pods can reach the internet
+- All pods accept traffic from anywhere
+
+**With Network Policies:**
+- Only explicitly allowed traffic is permitted
+- Everything else is denied
+
+### Hands-On: Create Your First Network Policy
+
+**Scenario:** Allow only frontend pods to access backend pods.
+
+**Step 1: Create Namespaces and Pods**
+```bash
+# Create namespaces
+kubectl create namespace frontend
+kubectl create namespace backend
+
+# Create backend app
+kubectl create deployment backend --image=nginx -n backend
+kubectl expose deployment backend --port=80 -n backend
+
+# Create frontend app
+kubectl create deployment frontend --image=nginx -n frontend
+
+# Test: Frontend can access backend (before policy)
+kubectl exec -it <frontend-pod> -n frontend -- curl http://backend.backend.svc.cluster.local
+# Should work
+```
+
+**Step 2: Create Network Policy (Block All)**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: backend
+spec:
+  podSelector: {}        # Applies to all pods
+  policyTypes:
+  - Ingress             # Block incoming traffic
+```
+
+```bash
+kubectl apply -f deny-all.yaml
+
+# Test: Frontend cannot access backend now
+kubectl exec -it <frontend-pod> -n frontend -- curl --max-time 5 http://backend.backend.svc.cluster.local
+# Should timeout
+```
+
+**Step 3: Allow Frontend Access**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend
+  namespace: backend
+spec:
+  podSelector:
+    matchLabels:
+      app: backend       # Apply to backend pods
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: frontend
+      podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - protocol: TCP
+      port: 80
+```
+
+```bash
+kubectl apply -f allow-frontend.yaml
+
+# Test: Frontend can access backend again
+kubectl exec -it <frontend-pod> -n frontend -- curl http://backend.backend.svc.cluster.local
+# Should work
+```
+
+### Practice Exercise 17: Least Permissive Network Policy
+
+**Exam Question:**
+*Three network policy YAMLs are provided. Choose and apply the LEAST permissive policy that allows pods with label `app: frontend` in namespace `frontend` to access pods with label `app: backend` in namespace `backend` on port 8080.*
+
+**Policy Options:**
+
+**Policy 1: Too Open (Empty Selectors)**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: policy1
+  namespace: backend
+spec:
+  podSelector: {}
+  ingress:
+  - from: []           # Allows ALL traffic!
+```
+
+**Policy 2: Correct (Pod + Namespace Selector)**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: policy2
+  namespace: backend
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: frontend
+      podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - protocol: TCP
+      port: 8080
+```
+
+**Policy 3: Too Open (Includes CIDR)**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: policy3
+  namespace: backend
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: frontend
+      podSelector:
+        matchLabels:
+          app: frontend
+    - ipBlock:          # Opens to external IPs too!
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: 8080
+```
+
+**Answer: Policy 2** (Most restrictive while meeting requirements)
+
+```bash
+kubectl apply -f policy2.yaml
+```
+
+### Practice Exercise 18: Port and Namespace Policy
+
+**Exam Question:**
+*Create NetworkPolicy `allow-port-from-namespace` in namespace `foobar` that allows pods from namespace `internal-ns` to access port 9000, denying all other traffic.*
+
+**Solution:**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-port-from-namespace
+  namespace: foobar
+spec:
+  podSelector: {}        # Apply to all pods in namespace
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: internal-ns
+    ports:
+    - protocol: TCP
+      port: 9000
+```
+
+```bash
+kubectl apply -f netpol.yaml
+
+# Verify
+kubectl get networkpolicy -n foobar
+kubectl describe networkpolicy allow-port-from-namespace -n foobar
+```
+
+### Egress Network Policies
+
+**Control Outbound Traffic:**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: webapp
+  policyTypes:
+  - Egress
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow HTTPS to external
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 169.254.169.254/32   # Block metadata service
+    ports:
+    - protocol: TCP
+      port: 443
+```
+
+### Network Policy Selectors
+
+**1. podSelector** - Which pods the policy applies to
+```yaml
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+```
+
+**2. namespaceSelector** - Which namespaces can connect
+```yaml
+ingress:
+- from:
+  - namespaceSelector:
+      matchLabels:
+        environment: production
+```
+
+**3. podSelector + namespaceSelector (AND)**
+```yaml
+ingress:
+- from:
+  - namespaceSelector:
+      matchLabels:
+        environment: production
+    podSelector:
+      matchLabels:
+        app: frontend
+```
+
+**4. Multiple from clauses (OR)**
+```yaml
+ingress:
+- from:
+  - namespaceSelector:
+      matchLabels:
+        env: prod
+  - namespaceSelector:
+      matchLabels:
+        env: staging
+```
+
+### Troubleshooting Network Policies
+
+```bash
+# Check if NetworkPolicy is applied
+kubectl get networkpolicy -A
+kubectl describe networkpolicy <name> -n <namespace>
+
+# Verify pod labels match
+kubectl get pods --show-labels -n <namespace>
+
+# Test connectivity
+kubectl run test --rm -it --image=busybox -n <source-namespace> -- wget -O- <service-url>
+
+# Check CNI supports NetworkPolicy
+kubectl get pods -n kube-system | grep -E 'calico|cilium|weave'
+```
+
+**Common Issues:**
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| Policy not working | CNI doesn't support NetworkPolicy | Install Calico/Cilium |
+| All traffic blocked | Default deny with no allow rules | Add ingress/egress rules |
+| Labels don't match | Pod labels ≠ policy selectors | Fix labels or selectors |
+
+---
+
+## CNI Installation & Configuration
+
+### What is CNI?
+
+**Simple Explanation:**
+Container Network Interface (CNI) is a plugin that sets up networking for containers. It assigns IPs, creates routes, and enforces network policies.
+
+**Popular CNI Plugins:**
+- **Calico** - Network policy enforcement, BGP routing
+- **Flannel** - Simple overlay network
+- **Cilium** - eBPF-based, advanced features
+- **Weave** - Encrypted overlay network
+
+### Practice Exercise 19: Install CNI
+
+**Exam Question:**
+*Install a CNI that supports native Network Policies. Choose either Calico v3.28.2 or Flannel v0.26.1.*
+
+**Solution: Install Calico (Recommended)**
+
+```bash
+# Apply Calico manifest
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.2/manifests/tigera-operator.yaml
+
+# Wait for Calico pods
+kubectl get pods -n calico-system -w
+
+# Verify all nodes are Ready
+kubectl get nodes
+
+# Verify Calico is running
+kubectl get pods -A | grep calico
+```
+
+**Alternative: Install Flannel**
+```bash
+kubectl apply -f https://github.com/flannel-io/flannel/releases/download/v0.26.1/kube-flannel.yml
+
+# Verify
+kubectl get pods -n kube-flannel -w
+```
+
+### Testing CNI Installation
+
+```bash
+# Create test pods
+kubectl run pod1 --image=nginx
+kubectl run pod2 --image=nginx
+
+# Get pod IPs
+kubectl get pods -o wide
+
+# Test connectivity
+kubectl exec pod1 -- ping -c 2 <pod2-ip>
+
+# Test DNS
+kubectl exec pod1 -- nslookup kubernetes.default
+
+# Create and test NetworkPolicy
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-policy
+spec:
+  podSelector:
+    matchLabels:
+      run: pod2
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          run: pod1
+EOF
+
+kubectl get networkpolicy
+```
+
+---
+
+## Ingress - External Access
+
+### What is Ingress?
+
+**Simple Explanation:**
+Ingress manages external HTTP/HTTPS access to services. It's like a smart reverse proxy that routes traffic based on hostnames and paths.
+
+**Real-World Analogy:**
+Think of Ingress as a hotel receptionist. External visitors (traffic) arrive, and the receptionist routes them to the right room (service) based on who they're visiting (hostname/path).
+
+### Ingress vs Service
+
+| Feature | NodePort Service | LoadBalancer Service | Ingress |
+|---------|------------------|----------------------|---------|
+| **L7 routing** | ❌ No | ❌ No | ✅ Yes (host/path) |
+| **TLS termination** | ❌ No | ❌ No | ✅ Yes |
+| **Cost** | Free | $$ per service | $ shared |
+| **Use case** | Development | Cloud production | Production |
+
+### Hands-On: Create Ingress
+
+**Prerequisites: Install Ingress Controller**
+
+```bash
+# Install nginx ingress controller
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml
+
+# Wait for controller
+kubectl get pods -n ingress-nginx -w
+
+# Verify
+kubectl get svc -n ingress-nginx
+```
+
+**Step 1: Create Backend Application**
+```bash
+# Create deployment
+kubectl create deployment echo-server --image=ealen/echo-server --port=80
+
+# Create service
+kubectl expose deployment echo-server --port=8080 --target-port=80
+```
+
+**Step 2: Create Ingress**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: example.org
+    http:
+      paths:
+      - path: /echo
+        pathType: Prefix
+        backend:
+          service:
+            name: echo-server
+            port:
+              number: 8080
+```
+
+```bash
+kubectl apply -f ingress.yaml
+
+# Get Ingress
+kubectl get ingress
+
+# Add to /etc/hosts (for testing)
+echo "127.0.0.1 example.org" | sudo tee -a /etc/hosts
+
+# Test
+curl http://example.org/echo
+```
+
+### Practice Exercise 20: Create Ingress for Echo Server
+
+**Exam Question:**
+*In namespace `sound-repeater`, create Ingress that exposes service `echo-server` (port 8080) at `http://example.org/echo` on port 80.*
+
+**Solution:**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-ingress
+  namespace: sound-repeater
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: example.org
+    http:
+      paths:
+      - path: /echo
+        pathType: Prefix
+        backend:
+          service:
+            name: echo-server
+            port:
+              number: 8080
+```
+
+```bash
+kubectl apply -f ingress.yaml -n sound-repeater
+
+# Verify
+kubectl get ingress -n sound-repeater
+kubectl describe ingress echo-ingress -n sound-repeater
+
+# Test (returns HTTP 200)
+curl -o /dev/null -s -w "%{http_code}\n" http://example.org/echo
+```
+
+### Ingress with TLS
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls-secret
+type: kubernetes.io/tls
+data:
+  tls.crt: <base64-encoded-cert>
+  tls.key: <base64-encoded-key>
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tls-ingress
+spec:
+  tls:
+  - hosts:
+    - example.org
+    secretName: tls-secret
+  rules:
+  - host: example.org
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-service
+            port:
+              number: 80
+```
+
+---
+
+## Gateway API - Next Generation Ingress
+
+### What is Gateway API?
+
+**Simple Explanation:**
+Gateway API is the successor to Ingress. It's more powerful, role-oriented, and supports more protocols (HTTP, TCP, UDP, gRPC).
+
+### Gateway API vs Ingress
+
+| Feature | Ingress | Gateway API |
+|---------|---------|-------------|
+| **Protocols** | HTTP/HTTPS only | HTTP, HTTPS, TCP, UDP, gRPC |
+| **Multi-tenancy** | Limited | Built-in (separate roles) |
+| **Traffic splitting** | Extensions only | Native support |
+| **Header matching** | Limited | Advanced |
+
+### Gateway API Components
+
+```
+GatewayClass (like StorageClass)
+       ↓
+Gateway (like LoadBalancer)
+       ↓
+HTTPRoute, TCPRoute, etc. (routing rules)
+       ↓
+Service (backend)
+```
+
+### Practice Exercise 21: Migrate Ingress to Gateway API
+
+**Exam Question:**
+*Migrate existing Ingress in namespace `webapp` to Gateway API. Create Gateway `web-gateway` with hostname `gateway.web.k8s.local`, using HTTPS (TLS secret `web-tls`). Create HTTPRoute `web-route` routing to service `web-service` on port 80.*
+
+**Solution:**
+
+**Step 1: Create Gateway**
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: web-gateway
+  namespace: webapp
+spec:
+  gatewayClassName: nginx
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: gateway.web.k8s.local
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: web-tls
+  - name: http
+    protocol: HTTP
+    port: 80
+    hostname: gateway.web.k8s.local
+```
+
+**Step 2: Create HTTPRoute**
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web-route
+  namespace: webapp
+spec:
+  parentRefs:
+  - name: web-gateway
+  hostnames:
+  - gateway.web.k8s.local
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: web-service
+      port: 80
+```
+
+```bash
+# Apply both
+kubectl apply -f gateway.yaml -f httproute.yaml
+
+# Verify
+kubectl get gateway -n webapp
+kubectl get httproute -n webapp
+
+# Test
+curl -k https://gateway.web.k8s.local
+```
+
+---
+
+## CoreDNS - Service Discovery
+
+### What is CoreDNS?
+
+**Simple Explanation:**
+CoreDNS is Kubernetes' DNS server. It resolves service names to IP addresses so pods can find each other by name instead of IP.
+
+### DNS Format in Kubernetes
+
+```
+<service-name>.<namespace>.svc.<cluster-domain>
+```
+
+**Examples:**
+```bash
+# Same namespace
+curl http://backend
+
+# Different namespace
+curl http://backend.production
+
+# Fully qualified
+curl http://backend.production.svc.cluster.local
+```
+
+### Practice Exercise 22: Add Custom DNS Domain
+
+**Exam Question:**
+*Backup CoreDNS ConfigMap to `/opt/course/16/coredns_backup.yaml`. Add `custom-domain` to the kubernetes plugin so services are also accessible via `service.namespace.custom-domain`. Restart CoreDNS.*
+
+**Solution:**
+
+**Step 1: Backup ConfigMap**
+```bash
+kubectl -n kube-system get configmap coredns -o yaml > /opt/course/16/coredns_backup.yaml
+```
+
+**Step 2: Edit CoreDNS ConfigMap**
+```bash
+kubectl -n kube-system edit configmap coredns
+```
+
+Change:
+```
+kubernetes cluster.local in-addr.arpa ip6.arpa {
+```
+
+To:
+```
+kubernetes custom-domain cluster.local in-addr.arpa ip6.arpa {
+```
+
+**Step 3: Restart CoreDNS**
+```bash
+kubectl -n kube-system rollout restart deployment coredns
+
+# Wait for restart
+kubectl -n kube-system rollout status deployment coredns
+```
+
+**Step 4: Test**
+```bash
+# Test original domain
+kubectl run test --rm -it --image=busybox -- nslookup kubernetes.default.svc.cluster.local
+
+# Test custom domain
+kubectl run test --rm -it --image=busybox -- nslookup kubernetes.default.svc.custom-domain
+
+# Both should return same IP
+```
+
+### Troubleshooting DNS
+
+```bash
+# Check CoreDNS pods
+kubectl get pods -n kube-system | grep coredns
+
+# Check CoreDNS logs
+kubectl logs -n kube-system -l k8s-app=kube-dns
+
+# Test DNS resolution
+kubectl run test --rm -it --image=busybox -- nslookup kubernetes.default
+
+# Check DNS config in pod
+kubectl run test --rm -it --image=busybox -- cat /etc/resolv.conf
+```
+
+---
+
+# Part 6: Security
+
+## RBAC - Role-Based Access Control
+
+### What is RBAC?
+
+**Simple Explanation:**
+RBAC controls who can do what in your cluster. It defines permissions (what actions) and assigns them to users, groups, or service accounts.
+
+**Real-World Analogy:**
+Think of RBAC like office access cards. Different employees (users) have different access levels (roles) - some can enter all rooms (cluster-admin), others only specific offices (namespace-specific roles).
+
+### RBAC Components
+
+```
+User/Group/ServiceAccount
+       ↓
+RoleBinding / ClusterRoleBinding
+       ↓
+Role / ClusterRole (permissions)
+       ↓
+Resources (pods, services, etc.)
+```
+
+### Role vs ClusterRole
+
+| Feature | Role | ClusterRole |
+|---------|------|-------------|
+| **Scope** | Single namespace | Cluster-wide |
+| **Resources** | Namespaced resources | All resources + cluster resources |
+| **Example** | Dev team access to dev namespace | Admin access to all namespaces |
+
+### Hands-On: Create Role and RoleBinding
+
+**Scenario:** Give user `john` permission to view pods in `development` namespace.
+
+**Step 1: Create Role**
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: development
+rules:
+- apiGroups: [""]       # "" = core API group
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+```
+
+**Step 2: Create RoleBinding**
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: development
+subjects:
+- kind: User
+  name: john
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+```bash
+kubectl apply -f role.yaml -f rolebinding.yaml
+
+# Test as user john
+kubectl auth can-i get pods --namespace=development --as=john
+# yes
+
+kubectl auth can-i delete pods --namespace=development --as=john
+# no
+```
+
+### Common Verbs
+
+| Verb | Description |
+|------|-------------|
+| `get` | Read a single resource |
+| `list` | List all resources |
+| `watch` | Watch for changes |
+| `create` | Create new resources |
+| `update` | Update existing resources |
+| `patch` | Partially update resources |
+| `delete` | Delete resources |
+| `*` | All verbs |
+
+### ClusterRole Example
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: read-pods-global
+subjects:
+- kind: User
+  name: jane
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cluster-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+---
+
+## Service Accounts
+
+### What are Service Accounts?
+
+**Simple Explanation:**
+Service Accounts are identities for pods. They allow pods to authenticate to the API server and access resources based on RBAC permissions.
+
+### Hands-On: Create Service Account
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: production
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: configmap-reader
+  namespace: production
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-sa-binding
+  namespace: production
+subjects:
+- kind: ServiceAccount
+  name: app-sa
+  namespace: production
+roleRef:
+  kind: Role
+  name: configmap-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-pod
+  namespace: production
+spec:
+  serviceAccountName: app-sa
+  containers:
+  - name: app
+    image: nginx
+```
+
+---
+
+## TLS Configuration
+
+### Practice Exercise 23: Configure TLS 1.3 Only
+
+**Exam Question:**
+*Edit ConfigMap `nginx-config` in namespace `webapp` to support only TLS 1.3 (disable TLS 1.2). Restart deployment to apply changes.*
+
+**Solution:**
+
+```bash
+# Edit ConfigMap
+kubectl edit configmap nginx-config -n webapp
+
+# Change:
+# ssl_protocols TLSv1.2 TLSv1.3;
+# To:
+# ssl_protocols TLSv1.3;
+
+# Restart deployment
+kubectl rollout restart deployment webapp -n webapp
+
+# Verify
+kubectl rollout status deployment webapp -n webapp
+
+# Test
+curl -k --tls-max 1.2 https://localhost:30443  # Should FAIL
+curl -k --tls-max 1.3 https://localhost:30443  # Should SUCCEED
+```
+
+---
+
+# Part 7: Cluster Maintenance
+
+## Node Maintenance & Draining
+
+### What is Draining?
+
+**Simple Explanation:**
+Draining safely removes all pods from a node before maintenance. It reschedules pods to other nodes and marks the node as unschedulable.
+
+### Hands-On: Drain and Uncordon Node
+
+```bash
+# View nodes
+kubectl get nodes
+
+# Drain node (safely evict pods)
+kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data
+
+# Node is now SchedulingDisabled
+kubectl get nodes
+
+# Perform maintenance...
+# (e.g., kernel update, hardware repair)
+
+# Uncordon node (make schedulable again)
+kubectl uncordon <node-name>
+
+# Verify
+kubectl get nodes
+```
+
+### Cordon (Without Eviction)
+
+```bash
+# Mark node unschedulable (don't evict existing pods)
+kubectl cordon <node-name>
+
+# Uncordon
+kubectl uncordon <node-name>
+```
+
+---
+
+## Cluster Upgrades with kubeadm
+
+### Practice Exercise 24: Upgrade Control Plane
+
+**Exam Question:**
+*Upgrade control plane node to v1.30.1. Drain if necessary, upgrade kubeadm/kubelet/kubectl, apply upgrade, restart kubelet, uncordon.*
+
+**Solution:**
+
+**Step 1: Drain Control Plane** (if asked)
+```bash
+kubectl drain controlplane --ignore-daemonsets --delete-emptydir-data
+```
+
+**Step 2: SSH to Control Plane**
+```bash
+ssh controlplane
+sudo -i
+```
+
+**Step 3: Upgrade kubeadm**
+```bash
+apt-mark unhold kubeadm
+apt-get update
+apt-get install -y kubeadm=1.30.1-00
+apt-mark hold kubeadm
+
+# Verify
+kubeadm version
+```
+
+**Step 4: Plan and Apply Upgrade**
+```bash
+kubeadm upgrade plan
+kubeadm upgrade apply v1.30.1
+```
+
+**Step 5: Upgrade kubelet and kubectl**
+```bash
+apt-mark unhold kubelet kubectl
+apt-get install -y kubelet=1.30.1-00 kubectl=1.30.1-00
+apt-mark hold kubelet kubectl
+
+# Restart kubelet
+systemctl daemon-reload
+systemctl restart kubelet
+systemctl status kubelet
+```
+
+**Step 6: Uncordon**
+```bash
+# Exit SSH
+exit
+
+# Uncordon
+kubectl uncordon controlplane
+
+# Verify
+kubectl get nodes
+kubectl version
+```
+
+---
+
+## Backup & Restore etcd
+
+### Backup etcd
+
+```bash
+# Backup etcd
+ETCDCTL_API=3 etcdctl snapshot save /tmp/etcd-backup.db \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key
+
+# Verify backup
+ETCDCTL_API=3 etcdctl snapshot status /tmp/etcd-backup.db
+```
+
+### Restore etcd
+
+```bash
+# Restore from backup
+ETCDCTL_API=3 etcdctl snapshot restore /tmp/etcd-backup.db \
+  --data-dir=/var/lib/etcd-restore
+
+# Update etcd manifest to use new data-dir
+# Edit /etc/kubernetes/manifests/etcd.yaml
+# Change: --data-dir=/var/lib/etcd
+# To: --data-dir=/var/lib/etcd-restore
+
+# Restart kubelet
+systemctl restart kubelet
+```
+
+---
+
+# Part 8: Troubleshooting
+
+## Working with crictl
+
+### What is crictl?
+
+**Simple Explanation:**
+crictl is a CLI for container runtimes (like docker but for containerd/CRI-O). Use it on nodes to inspect containers.
+
+### Practice Exercise 25: Get Container ID and Logs
+
+**Exam Question:**
+*Create pod `tigers-reunite` in namespace `project-tiger` with labels `pod: container` and `container: pod`, using image `httpd:2-alpine`. SSH to the node, find container ID and runtimeType, save to files. Export container logs.*
+
+**Solution:**
+
+**Step 1: Create Pod**
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tigers-reunite
+  namespace: project-tiger
+  labels:
+    pod: container
+    container: pod
+spec:
+  containers:
+  - name: webserver
+    image: httpd:2-alpine
+```
+
+```bash
+kubectl create namespace project-tiger
+kubectl apply -f pod.yaml
+```
+
+**Step 2: Find Node**
+```bash
+kubectl get pod tigers-reunite -n project-tiger -o wide
+# Note the NODE column
+```
+
+**Step 3: SSH to Node**
+```bash
+ssh <node-name>
+```
+
+**Step 4: Find Container**
+```bash
+# List containers
+crictl ps -a | grep tigers-reunite
+
+# Get container ID
+CONTAINER_ID=$(crictl ps -a | grep tigers-reunite | awk '{print $1}')
+echo $CONTAINER_ID
+```
+
+**Step 5: Get Runtime Type**
+```bash
+# Inspect container
+crictl inspect $CONTAINER_ID | grep runtimeType
+```
+
+**Step 6: Save to Files**
+```bash
+# Save container ID and runtime type
+echo $CONTAINER_ID > /course/17/pod-container.txt
+crictl inspect $CONTAINER_ID | grep runtimeType >> /course/17/pod-container.txt
+
+# Save logs
+crictl logs $CONTAINER_ID > /opt/course/17/pod-container.log
+```
+
+---
+
+## Node Troubleshooting
+
+### Practice Exercise 26: Fix NotReady Node
+
+**Exam Question:**
+*Worker node is NotReady. SSH to node, fix kubelet, ensure it starts on boot.*
+
+**Solution:**
+
+**Step 1: Identify Node**
+```bash
+kubectl get nodes
+# Look for NotReady status
+```
+
+**Step 2: SSH to Node**
+```bash
+ssh <worker-node>
+```
+
+**Step 3: Check kubelet**
+```bash
+sudo systemctl status kubelet
+# Likely: inactive (dead)
+```
+
+**Step 4: Start and Enable**
+```bash
+sudo systemctl start kubelet
+sudo systemctl enable kubelet
+sudo systemctl status kubelet
+```
+
+**Step 5: Verify**
+```bash
+# Exit SSH
+exit
+
+# Check node status
+kubectl get nodes
+# Should be Ready now
+```
+
+---
+
+## Cluster Component Troubleshooting
+
+### Practice Exercise 27: Fix Broken Cluster
+
+**Exam Question:**
+*Cluster is broken. Fix etcd and kube-apiserver manifests, restart kubelet.*
+
+**Solution:**
+
+**Step 1: SSH to Control Plane**
+```bash
+ssh controlplane
+```
+
+**Step 2: Check Manifests**
+```bash
+cd /etc/kubernetes/manifests/
+ls -la
+
+# Check etcd.yaml
+sudo vim etcd.yaml
+
+# Common issues:
+# - Wrong --etcd-servers URL
+# - Wrong cert paths
+# - Typos in arguments
+```
+
+**Step 3: Fix etcd.yaml**
+Example fix:
+```yaml
+# Change incorrect:
+--listen-client-urls=https://127.0.0.1:2379
+
+# To correct:
+--listen-client-urls=https://127.0.0.1:2379,https://<control-plane-ip>:2379
+```
+
+**Step 4: Fix kube-apiserver.yaml**
+```yaml
+# Verify --etcd-servers matches etcd URL
+--etcd-servers=https://127.0.0.1:2379
+```
+
+**Step 5: Restart kubelet**
+```bash
+sudo systemctl restart kubelet
+
+# Check status
+sudo systemctl status kubelet
+```
+
+**Step 6: Verify**
+```bash
+# Exit SSH
+exit
+
+# Check cluster
+kubectl get nodes
+kubectl get pods -A
+```
+
+---
+
+# Part 9: Advanced Topics
+
+## Custom Resource Definitions (CRDs)
+
+### Practice Exercise 28: Work with CRDs
+
+**Exam Question:**
+*List all CRDs containing "cert", save to file. Extract `subject` field from `certificates.cert-manager.io` CRD using JSONPath.*
+
+**Solution:**
+
+**Step 1: List CRDs**
+```bash
+kubectl get crd | grep cert > custom-crd.txt
+
+# Verify
+cat custom-crd.txt
+```
+
+**Step 2: JSONPath Query**
+```bash
+kubectl get crd certificates.cert-manager.io \
+  -o jsonpath='{.spec.versions[*].schema.openAPIV3Schema.properties.spec.properties.subject}' \
+  > cert-manager-subject.txt
+
+# Verify
+cat cert-manager-subject.txt
+```
+
+---
+
+## Container Runtime Configuration
+
+### Practice Exercise 29: Install cri-dockerd
+
+**Exam Question:**
+*Install cri-dockerd package from `~/cri-dockerd_*.deb`, enable service, configure sysctl for Kubernetes networking.*
+
+**Solution:**
+
+**Step 1: Install Package**
+```bash
+sudo dpkg -i ~/cri-dockerd_*.deb
+```
+
+**Step 2: Enable Service**
+```bash
+sudo systemctl enable cri-docker.socket
+sudo systemctl start cri-docker.socket
+sudo systemctl status cri-docker.socket
+```
+
+**Step 3: Configure sysctl**
+```bash
+# Create config file
+sudo tee /etc/sysctl.d/kubernetes.conf <<EOF
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
+
+# Apply
+sudo sysctl --system
+
+# Verify
+sysctl net.bridge.bridge-nf-call-iptables
+```
+
+---
+
+## Helm Basics
+
+### Practice Exercise 30: Deploy with Helm
+
+**Exam Question:**
+*Install ArgoCD using Helm chart version 7.7.3 in namespace `argocd`. CRDs already exist, so disable CRD installation. Save template to `~/argo-helm.yaml` then apply.*
+
+**Solution:**
+
+**Step 1: Add Helm Repo**
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update
+```
+
+**Step 2: Generate Template**
+```bash
+helm template argocd argo/argo-cd \
+  --version 7.7.3 \
+  --namespace argocd \
+  --set crds.install=false \
+  > ~/argo-helm.yaml
+```
+
+**Step 3: Apply**
+```bash
+kubectl apply -f ~/argo-helm.yaml
+```
+
+**Step 4: Verify**
+```bash
+kubectl get pods -n argocd
+cat ~/argo-helm.yaml | head -20  # Check namespace
+```
+
+---
+
+# Part 10: 22 Practice Questions
+
+## Complete Exam Simulation
+
+### Question 1: HPA with Stabilization (Weight: 7%)
+
+**Task:**
+Create HPA for deployment `apache-server` in namespace `auto-scale`:
+- CPU target: 50%
+- Min replicas: 1
+- Max replicas: 4
+- Scale-down stabilization: 30 seconds
+
+**Solution:**
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: apache-server-hpa
+  namespace: auto-scale
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: apache-server
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 30
+```
+
+```bash
+kubectl apply -f hpa.yaml
+kubectl get hpa -n auto-scale
+```
+
+---
+
+### Question 2: Deployment + NodePort (Weight: 10%)
+
+**Task:**
+In namespace `spline-reticulator`, deployment `front-end` exists:
+- Add containerPort 80 to deployment
+- Create NodePort service `front-end-svc` exposing port 80
+
+**Solution:**
+```bash
+# Add containerPort
+kubectl set image deployment/front-end nginx=nginx -n spline-reticulator
+kubectl edit deployment front-end -n spline-reticulator
+# Add:
+#   ports:
+#   - containerPort: 80
+
+# Create service
+kubectl expose deployment front-end --type=NodePort --port=80 --name=front-end-svc -n spline-reticulator
+
+# Verify
+kubectl get svc,deploy -n spline-reticulator
+```
+
+---
+
+### Question 3: Sidecar Container (Weight: 15%)
+
+**Task:**
+Edit deployment `synergy-leverager`:
+- Add sidecar container `sidecar` (image: `busybox:stable`)
+- Command: `tail -n+1 -f /var/log/synergy-leverager.log`
+- Share emptyDir volume at `/var/log`
+
+**Solution:**
+```bash
+kubectl edit deployment synergy-leverager
+```
+
+Add to spec.template.spec:
+```yaml
+volumes:
+- name: data
+  emptyDir: {}
+
+containers:
+- name: synergy-leverager
+  # ... existing config
+  volumeMounts:
+  - name: data
+    mountPath: /var/log
+
+- name: sidecar
+  image: busybox:stable
+  command: ["/bin/sh", "-c", "tail -n+1 -f /var/log/synergy-leverager.log"]
+  volumeMounts:
+  - name: data
+    mountPath: /var/log
+```
+
+---
+
+### Question 4: PriorityClass (Weight: 11%)
+
+**Task:**
+- Find highest user-defined PriorityClass value
+- Create `high-priority` with value (highest - 1)
+- Patch deployment `busybox-logger` to use it
+
+**Solution:**
+```bash
+# Find highest
+kubectl get priorityclass
+
+# Create (assuming highest is 1000)
+kubectl create priorityclass high-priority --value=999 --preemption-policy=PreemptLowerPriority
+
+# Patch deployment
+kubectl patch deployment busybox-logger -n priority -p '{"spec":{"template":{"spec":{"priorityClassName":"high-priority"}}}}'
+```
+
+---
+
+### Question 5: StorageClass (Weight: 8%)
+
+**Task:**
+Create StorageClass `local-path`:
+- Provisioner: `rancher.io/local-path`
+- volumeBindingMode: `WaitForFirstConsumer`
+- Set as default
+
+**Solution:**
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+```
+
+```bash
+kubectl apply -f storageclass.yaml
+kubectl get sc
+```
+
+---
+
+### Question 6: Helm ArgoCD (Weight: 7%)
+
+**Task:**
+Install ArgoCD via Helm:
+- Chart: `argo/argo-cd` version 7.7.3
+- Namespace: `argocd`
+- Disable CRD installation
+- Save template to `~/argo-helm.yaml`
+
+**Solution:**
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update
+helm template argocd argo/argo-cd --version 7.7.3 --namespace argocd --set crds.install=false > ~/argo-helm.yaml
+kubectl apply -f ~/argo-helm.yaml
+```
+
+---
+
+### Question 7: MariaDB + PVC (Weight: 13%)
+
+**Task:**
+- Create PVC `mariadb` (250Mi, storageClassName: `standard`)
+- Edit deployment to mount PVC at `/var/lib/mysql`
+
+**Solution:**
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mariadb
+  namespace: mariadb
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 250Mi
+```
+
+Edit deployment:
+```yaml
+volumes:
+- name: mariadb-storage
+  persistentVolumeClaim:
+    claimName: mariadb
+
+# In container:
+volumeMounts:
+- name: mariadb-storage
+  mountPath: /var/lib/mysql
+```
+
+---
+
+### Question 8: Gateway API (Weight: 12%)
+
+**Task:**
+Create Gateway + HTTPRoute:
+- Gateway: `web-gateway`, hostname `gateway.web.k8s.local`, HTTPS with TLS secret `web-tls`
+- HTTPRoute: `web-route`, route to service `web-service:80`
+
+**Solution:**
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: web-gateway
+  namespace: webapp
+spec:
+  gatewayClassName: nginx
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: gateway.web.k8s.local
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: web-tls
+  - name: http
+    protocol: HTTP
+    port: 80
+    hostname: gateway.web.k8s.local
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web-route
+  namespace: webapp
+spec:
+  parentRefs:
+  - name: web-gateway
+  hostnames:
+  - gateway.web.k8s.local
+  rules:
+  - backendRefs:
+    - name: web-service
+      port: 80
+```
+
+---
+
+### Question 9: CNI Installation (Weight: 9%)
+
+**Task:**
+Install CNI with NetworkPolicy support (Calico v3.28.2 or Flannel v0.26.1)
+
+**Solution:**
+```bash
+# Calico (recommended)
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.2/manifests/tigera-operator.yaml
+
+# Verify
+kubectl get pods -A | grep calico
+```
+
+---
+
+### Question 10: WordPress Resources (Weight: 9%)
+
+**Task:**
+Fix WordPress deployment:
+- Scale to 0
+- Add same resource requests/limits to init and main containers
+- Scale to 3
+
+**Solution:**
+```bash
+kubectl scale deployment wordpress --replicas=0
+kubectl edit deployment wordpress
+
+# Add to both init and main containers:
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"
+
+kubectl scale deployment wordpress --replicas=3
+```
+
+---
+
+### Question 11: cri-dockerd (Weight: 7%)
+
+**Task:**
+- Install `~/cri-dockerd_*.deb`
+- Enable/start cri-docker.socket
+- Configure sysctl
+
+**Solution:**
+```bash
+sudo dpkg -i ~/cri-dockerd_*.deb
+sudo systemctl enable cri-docker.socket
+sudo systemctl start cri-docker.socket
+
+sudo tee /etc/sysctl.d/kubernetes.conf <<EOF
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
+
+sudo sysctl --system
+```
+
+---
+
+### Question 12: CRDs + JSONPath (Weight: 7%)
+
+**Task:**
+- List CRDs with "cert", save to file
+- Extract `subject` field from `certificates.cert-manager.io` CRD
+
+**Solution:**
+```bash
+kubectl get crd | grep cert > custom-crd.txt
+kubectl get crd certificates.cert-manager.io -o jsonpath='{.spec.versions[*].schema.openAPIV3Schema.properties.spec.properties.subject}' > cert-manager-subject.txt
+```
+
+---
+
+### Question 13: Network Policy Least Permissive (Weight: 10%)
+
+**Task:**
+Choose most restrictive NetworkPolicy allowing frontend → backend
+
+**Solution:**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-to-backend
+  namespace: backend
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: frontend
+      podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - protocol: TCP
+      port: 8080
+```
+
+---
+
+### Question 14: CoreDNS Custom Domain
+
+**Task:**
+- Backup CoreDNS ConfigMap
+- Add `custom-domain` to kubernetes plugin
+- Restart CoreDNS
+
+**Solution:**
+```bash
+kubectl -n kube-system get configmap coredns -o yaml > /opt/course/16/coredns_backup.yaml
+kubectl -n kube-system edit configmap coredns
+
+# Change:
+# kubernetes cluster.local ...
+# To:
+# kubernetes custom-domain cluster.local ...
+
+kubectl -n kube-system rollout restart deployment coredns
+```
+
+---
+
+### Question 15: crictl Pod Info
+
+**Task:**
+- Create pod `tigers-reunite`
+- SSH to node, find container ID and runtimeType
+- Export logs
+
+**Solution:**
+```bash
+# Create pod
+kubectl apply -f pod.yaml
+
+# Find node
+kubectl get pod tigers-reunite -n project-tiger -o wide
+
+# SSH to node
+ssh <node>
+
+# Find container
+crictl ps -a | grep tigers-reunite
+CONTAINER_ID=$(crictl ps -a | grep tigers-reunite | awk '{print $1}')
+
+# Save info
+echo $CONTAINER_ID > /course/17/pod-container.txt
+crictl inspect $CONTAINER_ID | grep runtimeType >> /course/17/pod-container.txt
+
+# Save logs
+crictl logs $CONTAINER_ID > /opt/course/17/pod-container.log
+```
+
+---
+
+### Question 16: Network Policy Port
+
+**Task:**
+Create NetworkPolicy `allow-port-from-namespace` allowing namespace `internal-ns` to access port 9000 in namespace `foobar`
+
+**Solution:**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-port-from-namespace
+  namespace: foobar
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: internal-ns
+    ports:
+    - protocol: TCP
+      port: 9000
+```
+
+---
+
+### Question 17: Count Ready Nodes
+
+**Task:**
+Count Ready nodes excluding NoSchedule taint, write to file
+
+**Solution:**
+```bash
+kubectl describe nodes | grep -A5 Taints
+# Count Ready nodes without NoSchedule
+
+echo "2" > /opt/KUSC00402/kusc00402.txt
+```
+
+---
+
+### Question 18: Fix NotReady Node
+
+**Task:**
+SSH to NotReady worker, start/enable kubelet
+
+**Solution:**
+```bash
+ssh <worker-node>
+sudo systemctl start kubelet
+sudo systemctl enable kubelet
+exit
+kubectl get nodes
+```
+
+---
+
+### Question 19: kubeadm Upgrade
+
+**Task:**
+Upgrade control plane to v1.30.1
+
+**Solution:**
+```bash
+kubectl drain controlplane --ignore-daemonsets --delete-emptydir-data
+ssh controlplane
+sudo -i
+
+apt-mark unhold kubeadm kubelet kubectl
+apt-get update
+apt-get install -y kubeadm=1.30.1-00 kubelet=1.30.1-00 kubectl=1.30.1-00
+apt-mark hold kubeadm kubelet kubectl
+
+kubeadm upgrade apply v1.30.1
+systemctl daemon-reload
+systemctl restart kubelet
+
+exit
+kubectl uncordon controlplane
+```
+
+---
+
+### Question 20: TLS 1.3 Only
+
+**Task:**
+Edit ConfigMap to support only TLS 1.3, restart deployment
+
+**Solution:**
+```bash
+kubectl edit configmap nginx-config -n webapp
+
+# Change:
+# ssl_protocols TLSv1.2 TLSv1.3;
+# To:
+# ssl_protocols TLSv1.3;
+
+kubectl rollout restart deployment webapp -n webapp
+```
+
+---
+
+### Question 21: Ingress
+
+**Task:**
+Create Ingress for `echo-server` at `http://example.org/echo`
+
+**Solution:**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-ingress
+  namespace: sound-repeater
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: example.org
+    http:
+      paths:
+      - path: /echo
+        pathType: Prefix
+        backend:
+          service:
+            name: echo-server
+            port:
+              number: 8080
+```
+
+---
+
+### Question 22: Cluster Troubleshoot
+
+**Task:**
+Fix broken cluster (etcd/kube-apiserver manifests)
+
+**Solution:**
+```bash
+ssh controlplane
+cd /etc/kubernetes/manifests/
+
+# Fix etcd.yaml
+sudo vim etcd.yaml
+# Check: --etcd-servers, cert paths
+
+# Fix kube-apiserver.yaml
+sudo vim kube-apiserver.yaml
+# Check: --etcd-servers matches
+
+sudo systemctl restart kubelet
+exit
+kubectl get nodes
+```
 
 ---
 
